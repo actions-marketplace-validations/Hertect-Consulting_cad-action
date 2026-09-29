@@ -37976,12 +37976,25 @@ function parseFile(file) {
             });
         }
         else {
+            // Ownership and review dates are read here too, though the rest of the
+            // five-line shape is not. The inventory counts owned and reviewed rules
+            // without looking at the shape, so a repository whose instruction file
+            // uses plain headings was told "0 of 8 name an owner" however many Owner
+            // lines it had -- the count asked a question the parser never answered.
+            //
+            // What, Applies to and Check stay out on purpose: `scannableFields` says
+            // heading blocks have no such fields and check 3 reads their whole body
+            // instead. Owner and Reviewed are facts a heading block can state about
+            // itself; the other three are the five-line shape's own contract.
+            const { owner, reviewed } = parseFiveLineFields(body);
             rules.push({
                 file: file.path,
                 kind: file.kind,
                 shape: "heading",
                 title: h.text,
                 titleLine: h.line,
+                owner,
+                reviewed,
                 bodyText,
                 bodyStartLine: h.line,
             });

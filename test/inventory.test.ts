@@ -68,3 +68,22 @@ describe("buildInventory", () => {
     });
   });
 });
+
+// The bug this pairs with lives in the parser, which never filled owner or reviewed for a
+// heading-shaped rule. The count below was always shape-independent, so the two disagreed
+// and the comment said "0 of 8 name an owner" about a file where all eight did.
+describe("counting ownership on a file that uses plain headings", () => {
+  it("counts a heading-shaped rule that names an owner and a review date", () => {
+    const inv = buildInventory(
+      [file("AGENTS.md", "AGENTS")],
+      [
+        rule({ shape: "heading", owner: "@heathergearreald", reviewed: "2026-09-25" }),
+        rule({ shape: "heading", owner: "@heathergearreald", reviewed: "2026-09-25" }),
+        rule({ shape: "heading" }),
+      ],
+    );
+    expect(inv.ruleCount).toBe(3);
+    expect(inv.ownedRuleCount).toBe(2);
+    expect(inv.reviewedRuleCount).toBe(2);
+  });
+});

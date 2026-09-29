@@ -40,6 +40,90 @@ describe("parseFile — the five file kinds", () => {
     expect(rules.every((r) => r.shape === "heading")).toBe(true);
   });
 
+  // The inventory counts owned and reviewed rules without looking at the shape, so a file
+  // that uses plain headings was reported as "0 of N name an owner" however many Owner
+  // lines it carried. Ctrl Alt Delegate's own AGENTS.md was the first repository to say so.
+  it("reads Owner and Reviewed out of a heading block", () => {
+    const file: DiscoveredFile = {
+      path: "AGENTS.md",
+      kind: "AGENTS",
+      content: [
+        "# Agent instructions",
+        "",
+        "## Process",
+        "",
+        "Owner: @heathergearreald",
+        "Reviewed: 2026-09-25",
+        "",
+        "Read the build rules before any work.",
+        "",
+        "## Unowned",
+        "",
+        "Nothing here names anyone.",
+        "",
+      ].join("\n"),
+    };
+    const rules = parseFile(file);
+    expect(rules).toHaveLength(2);
+    expect(rules[0].shape).toBe("heading");
+    expect(rules[0].owner).toBe("@heathergearreald");
+    expect(rules[0].reviewed).toBe("2026-09-25");
+    // The section that names nobody still names nobody.
+    expect(rules[1].owner).toBeUndefined();
+    expect(rules[1].reviewed).toBeUndefined();
+  });
+
+  // What, Applies to and Check stay out: `scannableFields` returns nothing for a heading
+  // block, and check 3 reads its whole body instead. Reading them here would quietly
+  // change which rules checks 1 and 2 scan.
+  it("does not take the other three five-line fields out of a heading block", () => {
+    const file: DiscoveredFile = {
+      path: "AGENTS.md",
+      kind: "AGENTS",
+      content: [
+        "# Agent instructions",
+        "",
+        "## Deploys",
+        "",
+        "What: ship it",
+        "Applies to: everywhere",
+        "Check: `npm run deploy`",
+        "Owner: @heathergearreald",
+        "",
+      ].join("\n"),
+    };
+    const [rule] = parseFile(file);
+    expect(rule.shape).toBe("heading");
+    expect(rule.owner).toBe("@heathergearreald");
+    expect(rule.whatText).toBeUndefined();
+    expect(rule.appliesToText).toBeUndefined();
+    expect(rule.checkText).toBeUndefined();
+  });
+
+  // The fence mask already protects the five-line shape; ownership must not be an exception.
+  it("ignores an Owner line shown inside a code fence", () => {
+    const file: DiscoveredFile = {
+      path: "AGENTS.md",
+      kind: "AGENTS",
+      content: [
+        "# Agent instructions",
+        "",
+        "## How to write a rule",
+        "",
+        "Copy this shape:",
+        "",
+        "```",
+        "Owner: @someone",
+        "Reviewed: 2026-01-01",
+        "```",
+        "",
+      ].join("\n"),
+    };
+    const [rule] = parseFile(file);
+    expect(rule.owner).toBeUndefined();
+    expect(rule.reviewed).toBeUndefined();
+  });
+
   it("only extracts `## Rule:` blocks from a file that uses the five-line shape, ignoring other headings", () => {
     const file: DiscoveredFile = {
       path: "AGENTS.md",
