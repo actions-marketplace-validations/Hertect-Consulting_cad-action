@@ -148,6 +148,59 @@ describe("parseFile — the five file kinds", () => {
   });
 });
 
+describe("parseFile — prose before the first `## ` heading", () => {
+  it("parses a one-line CLAUDE.md with no headings into one heading-shaped rule named after the file", () => {
+    const file: DiscoveredFile = { path: "CLAUDE.md", kind: "CLAUDE", content: "Read AGENTS.md and follow it.\n" };
+    const rules = parseFile(file);
+    expect(rules).toHaveLength(1);
+    expect(rules[0].shape).toBe("heading");
+    expect(rules[0].title).toBe("CLAUDE.md");
+    expect(rules[0].bodyStartLine).toBe(1);
+    expect(rules[0].bodyText).toContain("Read AGENTS.md");
+  });
+
+  it("keeps the preamble as its own rule ahead of the `## ` blocks, titled by the `# ` heading", () => {
+    const file: DiscoveredFile = {
+      path: "AGENTS.md",
+      kind: "AGENTS",
+      content: "# Tools\n\nRun `npm run lint` first.\n\n## Scripts\n`scripts/a.sh` does a thing.\n",
+    };
+    const rules = parseFile(file);
+    expect(rules.map((r) => r.title)).toEqual(["Tools", "Scripts"]);
+    expect(rules[0].titleLine).toBe(1);
+    expect(rules[0].bodyText.split("\n")).toHaveLength(4);
+  });
+
+  it("blanks a Cursor rule's frontmatter instead of dropping it, so line numbers hold", () => {
+    const file: DiscoveredFile = {
+      path: ".cursor/rules/deploy.mdc",
+      kind: "CURSOR_MDC",
+      content: "---\ndescription: Deploy\nalwaysApply: true\n---\n\nDeploy with `npm run deploy`.\n",
+    };
+    const rules = parseFile(file);
+    expect(rules).toHaveLength(1);
+    expect(rules[0].title).toBe("deploy.mdc");
+    expect(rules[0].bodyText.split("\n")[5]).toBe("Deploy with `npm run deploy`.");
+    expect(rules[0].bodyText).not.toContain("description:");
+  });
+
+  it("adds no preamble rule when only a `# ` title precedes the first `## ` heading", () => {
+    const file: DiscoveredFile = { path: "GEMINI.md", kind: "GEMINI", content: "# GEMINI.md\n\n## Only\nProse.\n" };
+    expect(parseFile(file)).toHaveLength(1);
+  });
+
+  it("adds no preamble rule to a file that uses the five-line shape", () => {
+    const file: DiscoveredFile = {
+      path: "AGENTS.md",
+      kind: "AGENTS",
+      content: "Intro prose.\n\n## Rule: Real\nWhat: A thing.\nApplies to: **/*\nCheck: `npm test`\nOwner: @x\nReviewed: 2026-10-19\n",
+    };
+    const rules = parseFile(file);
+    expect(rules).toHaveLength(1);
+    expect(rules[0].shape).toBe("five-line");
+  });
+});
+
 describe("parseFile — fenced example blocks are not parsed as real rules", () => {
   it("ignores a `## Rule:` heading and What/Check lines shown inside a code fence", () => {
     const file: DiscoveredFile = {

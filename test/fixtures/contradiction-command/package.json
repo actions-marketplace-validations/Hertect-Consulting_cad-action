@@ -1,0 +1,5 @@
+{
+  "name": "contradiction-command-fixture",
+  "private": true,
+  "scripts": { "test": "vitest run" }
+}

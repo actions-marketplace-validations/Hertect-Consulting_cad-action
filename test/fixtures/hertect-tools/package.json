@@ -1,0 +1,13 @@
+{
+  "name": "hertect-tools",
+  "private": true,
+  "version": "1.0.0",
+  "scripts": {
+    "test": "node --test",
+    "build": "tsc -p ."
+  },
+  "devDependencies": {
+    "eslint": "^9.0.0",
+    "typescript": "^5.5.0"
+  }
+}

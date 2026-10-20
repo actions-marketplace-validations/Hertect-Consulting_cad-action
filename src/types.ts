@@ -38,14 +38,23 @@ export interface ParsedRule {
   bodyStartLine: number;
 }
 
-export type CheckId = "dead-command" | "dead-path" | "no-check" | "contradiction";
+export type CheckId = "dead-command" | "dead-path" | "no-check" | "no-file" | "contradiction";
 
 export interface Finding {
   check: CheckId;
   file: string;
+  /** 1-based; 0 when the finding is about a file that does not exist. */
   line: number;
   sentence: string;
   lookedFor?: string;
+}
+
+/**
+ * Something worth saying that is not wrong with the repository: shown in the
+ * comment above the findings, never counted, never gating.
+ */
+export interface Note {
+  sentence: string;
 }
 
 export interface RunOptions {
@@ -83,5 +92,6 @@ export interface RunResult {
   ruleCount: number;
   fileCount: number;
   inventory: Inventory;
+  notes: Note[];
   conclusion: "success" | "failure";
 }

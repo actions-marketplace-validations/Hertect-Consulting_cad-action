@@ -15,7 +15,7 @@ jobs:
       - uses: ./
         with:
           # This repo's own test/fixtures/** deliberately contain broken
-          # instruction files (that's what the four checks are tested
+          # instruction files (that's what the five checks are tested
           # against), so a full-repo scan always has findings there. The
           # real correctness gate is `npm test` in ci.yml; this job is a
           # live dogfood run and evidence, not a merge gate.

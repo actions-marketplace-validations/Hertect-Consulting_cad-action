@@ -106,6 +106,42 @@ function findSection(
   return { text, startLine: firstNonEmpty?.lineNo ?? h.line };
 }
 
+/** The 0-based index of the line after a leading `---` frontmatter block, or 0 when there is none. */
+function frontmatterEnd(lines: string[]): number {
+  if (lines[0]?.trim() !== "---") return 0;
+  for (let i = 1; i < lines.length; i++) {
+    if (lines[i].trim() === "---") return i + 1;
+  }
+  return 0;
+}
+
+/**
+ * The prose before the first `## ` heading of a heading-block file, as one
+ * rule of its own. A short CLAUDE.md, a Cursor rule, or an AGENTS.md whose
+ * first paragraph carries the real instructions has no `## ` heading at
+ * all, and until now parsed to nothing, so no check ever read it. The
+ * title is the `# ` heading when there is one, else the file's name.
+ * Frontmatter lines are blanked rather than dropped so line numbers hold.
+ */
+function parsePreamble(file: DiscoveredFile, lines: string[], headings: Heading[]): ParsedRule | undefined {
+  const start = frontmatterEnd(lines);
+  const end = headings[0] ? headings[0].line - 1 : lines.length;
+  const body = lines.slice(0, end).map((text, i) => (i < start ? "" : text));
+  const titleIdx = body.findIndex((text) => /^#\s+\S/.test(text));
+  const hasProse = body.some((text, i) => i !== titleIdx && text.trim().length > 0);
+  if (!hasProse) return undefined;
+  const title = titleIdx >= 0 ? body[titleIdx].replace(/^#\s+/, "").trim() : (file.path.split("/").pop() ?? file.path);
+  return {
+    file: file.path,
+    kind: file.kind,
+    shape: "heading",
+    title,
+    titleLine: titleIdx >= 0 ? titleIdx + 1 : 1,
+    bodyText: body.join("\n"),
+    bodyStartLine: 1,
+  };
+}
+
 export function parseFile(file: DiscoveredFile): ParsedRule[] {
   const lines = file.content.split(/\r?\n/);
   const fenced = computeFenceMask(lines);
@@ -137,6 +173,10 @@ export function parseFile(file: DiscoveredFile): ParsedRule[] {
   const blockHeadings = usesFiveLineShape ? ruleHeadings : headings;
 
   const rules: ParsedRule[] = [];
+  if (!usesFiveLineShape) {
+    const preamble = parsePreamble(file, lines, headings);
+    if (preamble) rules.push(preamble);
+  }
   blockHeadings.forEach((h) => {
     const allHeadingsIdx = headings.indexOf(h);
     const nextLine = headings[allHeadingsIdx + 1]?.line ?? lines.length + 1;

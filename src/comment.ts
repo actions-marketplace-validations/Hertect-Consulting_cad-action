@@ -2,11 +2,12 @@ import type { CheckId, Finding, Inventory, RunResult } from "./types.js";
 
 export const COMMENT_MARKER = "<!-- ctrl-alt-delegate-action:sticky-comment -->";
 
-const CHECK_ORDER: CheckId[] = ["dead-command", "dead-path", "no-check", "contradiction"];
+const CHECK_ORDER: CheckId[] = ["dead-command", "dead-path", "no-check", "no-file", "contradiction"];
 const CHECK_LABEL: Record<CheckId, string> = {
   "dead-command": "Dead command",
   "dead-path": "Dead path",
   "no-check": "No Check line",
+  "no-file": "No instruction file",
   contradiction: "Contradiction",
 };
 
@@ -17,6 +18,7 @@ export function buildComment(result: RunResult): string {
   const lines: string[] = [COMMENT_MARKER, "## Ctrl Alt Delegate", ""];
 
   lines.push(...inventoryLines(result.inventory));
+  for (const note of result.notes) lines.push(note.sentence, "");
 
   if (result.findings.length === 0) {
     lines.push("No findings.", "");
@@ -76,5 +78,6 @@ function plural(count: number, noun: string): string {
 
 function formatFindingLine(f: Finding): string {
   const lookedFor = f.lookedFor ? ` — looked for \`${f.lookedFor}\`` : "";
-  return `- \`${f.file}:${f.line}\` — ${f.sentence}${lookedFor}`;
+  const where = f.line > 0 ? `${f.file}:${f.line}` : f.file;
+  return `- \`${where}\` — ${f.sentence}${lookedFor}`;
 }

@@ -1,0 +1,7 @@
+---
+description: Deploy command for staging
+alwaysApply: true
+---
+
+Deploy staging with `npm run deploy` (not `npm run deploy:staging`). The staging alias was
+retired when the deploy pipeline moved to a single unified script.

@@ -21,6 +21,7 @@ describe("buildComment", () => {
       ruleCount: 3,
       fileCount: 1,
       inventory: inventory(),
+      notes: [],
       conclusion: "success",
     };
     const body = buildComment(empty);
@@ -36,6 +37,7 @@ describe("buildComment", () => {
       ruleCount: 0,
       fileCount: 0,
       inventory: inventory({ fileCount: 0, ruleCount: 0, toolCount: 0, tools: [], ownedRuleCount: 0 }),
+      notes: [],
       conclusion: "success",
     };
     expect(buildComment(empty)).toContain(COMMENT_MARKER);
@@ -46,6 +48,7 @@ describe("buildComment", () => {
       ruleCount: 1,
       fileCount: 1,
       inventory: inventory({ ruleCount: 1 }),
+      notes: [],
       conclusion: "failure",
       findings: [
         {
@@ -82,6 +85,7 @@ describe("buildComment", () => {
         ownedRuleCount: 4,
         reviewedRuleCount: 12,
       }),
+      notes: [],
       conclusion: "success",
     };
     const body = buildComment(clean);
@@ -96,6 +100,7 @@ describe("buildComment", () => {
       ruleCount: 2,
       fileCount: 1,
       inventory: inventory({ ruleCount: 2 }),
+      notes: [],
       conclusion: "failure",
       findings: [
         { check: "no-check", file: "AGENTS.md", line: 3, sentence: "No Check line." },
@@ -111,6 +116,7 @@ describe("buildComment", () => {
       ruleCount: 1,
       fileCount: 1,
       inventory: inventory({ fileCount: 1, ruleCount: 1, toolCount: 1 }),
+      notes: [],
       conclusion: "success",
     };
     expect(buildComment(one)).toContain("**1 instruction file · 1 tool · 1 rule**");
@@ -122,10 +128,47 @@ describe("buildComment", () => {
       ruleCount: 0,
       fileCount: 0,
       inventory: inventory({ fileCount: 0, ruleCount: 0, toolCount: 0, tools: [], ownedRuleCount: 0 }),
+      notes: [],
       conclusion: "success",
     };
     const body = buildComment(none);
     expect(body).toContain("No instruction or skill files found in this repository.");
     expect(body).not.toContain("name an owner");
+  });
+
+  it("prints a note under the inventory, above the findings", () => {
+    const result: RunResult = {
+      findings: [],
+      ruleCount: 1,
+      fileCount: 1,
+      inventory: inventory({ ruleCount: 1 }),
+      notes: [{ sentence: "No instruction file for Gemini. Not a finding: nothing here says it is in use." }],
+      conclusion: "success",
+    };
+    const body = buildComment(result);
+    expect(body.indexOf("No instruction file for Gemini.")).toBeGreaterThan(body.indexOf("name an owner"));
+    expect(body.indexOf("No instruction file for Gemini.")).toBeLessThan(body.indexOf("No findings."));
+  });
+
+  it("names the file alone, with no line, for a finding about a file that does not exist", () => {
+    const result: RunResult = {
+      ruleCount: 1,
+      fileCount: 1,
+      inventory: inventory({ ruleCount: 1 }),
+      notes: [],
+      conclusion: "failure",
+      findings: [
+        {
+          check: "no-file",
+          file: "CLAUDE.md",
+          line: 0,
+          sentence: "No instruction file: Claude Code reads CLAUDE.md, and this repository has none at the head commit.",
+        },
+      ],
+    };
+    const body = buildComment(result);
+    expect(body).toContain("### No instruction file (1)");
+    expect(body).toContain("- `CLAUDE.md` — No instruction file:");
+    expect(body).not.toContain("CLAUDE.md:0");
   });
 });

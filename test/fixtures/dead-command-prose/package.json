@@ -1,0 +1,11 @@
+{
+  "name": "dead-command-prose-fixture",
+  "private": true,
+  "scripts": {
+    "build": "tsc -p .",
+    "verify": "node scripts/verify.js"
+  },
+  "devDependencies": {
+    "prisma": "^6.0.0"
+  }
+}
