@@ -42,6 +42,10 @@ Five checks, each a finding with file, line, and one sentence. Prose counts: a h
 
 One sticky PR comment, grouped by check, updated on each run — never a new comment per run.
 
+When the pull request itself changes an instruction file, the comment also says what changed in instruction terms: which files, which tools read each one (Claude Code, Codex, Cursor, Copilot, Gemini), what each applies to, which rules were added, removed or edited by heading, and the file's `Owner:` line if it has one. A pull request that changes no instruction file gets no such section.
+
+When the fix is the one thing the author can have meant, Ctrl Alt Delegate proposes it as a GitHub suggested change on the finding's line, which you accept or ignore in the normal review UI: a dead path whose file is the only one of that name in the repository (it moved), or a dead `npm run`/`pnpm`/`yarn`/`make` target that is one case change or one hyphen or underscore away from a defined script or target. Never more than one per finding, never when two fixes are possible, and only on a line the pull request's diff holds, which is the only place GitHub lets a suggestion sit. The comment says what was proposed either way. A person decides.
+
 ## What it reads
 
 The rules and skills in these files, at the pull request's head commit:
@@ -69,7 +73,7 @@ If you can't write the Check line, the rule is a wish, not a rule. Starter files
 
 ## What it never does
 
-Writes to your repo, opens PRs, rewrites your rules, sends your data anywhere, looks at other repos, or keeps state between runs.
+Writes to your repo, opens PRs, rewrites your rules, sends your data anywhere, looks at other repos, or keeps state between runs. A suggested change is a review comment; nothing lands until a person accepts it.
 
 ## Notes
 

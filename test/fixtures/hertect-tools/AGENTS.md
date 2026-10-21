@@ -10,11 +10,14 @@ reads it through CLAUDE.md, which contains only: `Read AGENTS.md and follow it.`
 - `scripts/rotate-keys.sh` rotates the shared API keys used by internal tooling. Run
   `npm run lint` before committing any change to it.
 - Deploy staging with `npm run deploy:staging` before ever touching production.
+- Run `npm run typecheck` before pushing.
 
 ## Standing rules
 
 - Do not commit credentials or private keys. The Cloudflare Web Analytics site token is
   public configuration, not a secret.
+
+Owner: @hertect-ops
 
 ## Scope boundaries
 

@@ -1,5 +1,6 @@
 import { dirExists, fileExists, ignoredPaths, listFiles } from "../fs-walk.js";
 import { globExpand } from "../glob.js";
+import { movedFile, proposeReplacement } from "../proposals.js";
 import { extractPathLikeTokens } from "../scan.js";
 import type { Finding, ParsedRule } from "../types.js";
 import { commandsIn, headingBlockLines, scannableFields } from "./shared.js";
@@ -105,6 +106,16 @@ function proseSentence(token: string, claim: NonNullable<ProsePath>): string {
   return `Dead path: \`${token}\` does not exist at the head commit.`;
 }
 
+/**
+ * The fix for a path whose file the Action can see elsewhere, as the one
+ * file with that basename: the path rewritten on the line, as a suggested
+ * change. `scripts/rotate-keys.sh` after the script moved to `tools/` is the case.
+ */
+function proposeMove(rule: ParsedRule, line: number, token: string, allFiles: string[]) {
+  const moved = movedFile(token, allFiles);
+  return moved ? proposeReplacement(rule, line, token, moved) : undefined;
+}
+
 export function checkDeadPath(root: string, rules: ParsedRule[]): Finding[] {
   const allFiles = listFiles(root);
   const findings: Finding[] = [];
@@ -126,6 +137,7 @@ export function checkDeadPath(root: string, rules: ParsedRule[]): Finding[] {
             line,
             sentence: proseSentence(token, claim),
             lookedFor: token,
+            proposal: proposeMove(rule, line, token, allFiles),
           });
         }
       }
@@ -155,6 +167,7 @@ export function checkDeadPath(root: string, rules: ParsedRule[]): Finding[] {
             line: field.line,
             sentence: `Dead path: \`${token}\` does not exist at the head commit.`,
             lookedFor: token,
+            proposal: proposeMove(rule, field.line, token, allFiles),
           });
         }
       }

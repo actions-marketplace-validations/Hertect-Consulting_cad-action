@@ -1,5 +1,6 @@
 import { isAllowedFirstToken } from "../allowlist.js";
 import { loadDefinedCommands, isDefined, type DefinedCommands } from "../definitions.js";
+import { nearMiss, proposeReplacement, renameInCommand } from "../proposals.js";
 import {
   extractBacktickedCommands,
   firstToken,
@@ -34,6 +35,7 @@ function deadScriptFinding(rule: ParsedRule, commands: string[], line: number, d
             ? `Dead command: \`${part}\` — no package.json in the repository has a script named \`${script}\`.`
             : `Dead command: \`${part}\` — package.json has no script named \`${script}\`.`,
           lookedFor: script,
+          proposal: proposeRename(rule, line, part, script, known),
         });
       }
       const target = makeTargetInvocation(part);
@@ -44,11 +46,23 @@ function deadScriptFinding(rule: ParsedRule, commands: string[], line: number, d
           line,
           sentence: `Dead command: \`${part}\` — no Makefile target named \`${target}\`.`,
           lookedFor: target,
+          proposal: proposeRename(rule, line, part, target, defs.makeTargets),
         });
       }
     }
   }
   return out;
+}
+
+/**
+ * The fix for a script or target that is a near miss of exactly one defined
+ * one: the same command with the name corrected, as a suggested change on
+ * the line. `npm run typecheck` against a `type-check` script is the case.
+ */
+function proposeRename(rule: ParsedRule, line: number, command: string, name: string, defined: Set<string>) {
+  const match = nearMiss(name, defined);
+  if (!match) return undefined;
+  return proposeReplacement(rule, line, command, renameInCommand(command, name, match));
 }
 
 /** A command candidate after the script and target forms have been judged on their own. */

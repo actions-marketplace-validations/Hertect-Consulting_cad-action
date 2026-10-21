@@ -3,7 +3,8 @@ import { fileExists, listFiles, readRepoFile } from "./fs-walk.js";
 import { globExpand } from "./glob.js";
 import type { DiscoveredFile, FileKind } from "./types.js";
 
-function classify(path: string): FileKind | undefined {
+/** The kind the Action reads a path as, or undefined for a file it does not read. */
+export function classify(path: string): FileKind | undefined {
   const base = path.split("/").pop() ?? path;
   if (base === "AGENTS.md") return "AGENTS";
   if (base === "CLAUDE.md") return "CLAUDE";

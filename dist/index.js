@@ -29229,7 +29229,8 @@ var __webpack_exports__ = {};
 
 // EXPORTS
 __nccwpck_require__.d(__webpack_exports__, {
-  B: () => (/* binding */ isForkPullRequest)
+  B: () => (/* binding */ isForkPullRequest),
+  A: () => (/* binding */ listChangedFiles)
 });
 
 ;// CONCATENATED MODULE: external "os"
@@ -37179,6 +37180,27 @@ function getOctokit(token, options, ...additionalPlugins) {
 //# sourceMappingURL=github.js.map
 ;// CONCATENATED MODULE: ./src/comment.ts
 const COMMENT_MARKER = "<!-- ctrl-alt-delegate-action:sticky-comment -->";
+/** The marker that keys one suggested change to its finding, so a rerun updates it rather than posting it again. */
+function suggestionMarker(f) {
+    return `<!-- ctrl-alt-delegate-action:suggestion:${f.file}:${f.line}:${f.lookedFor ?? ""} -->`;
+}
+/**
+ * The body of the review comment that carries a suggested change: the
+ * finding, who proposed the fix, and the fix in the fenced block GitHub
+ * turns into an "Add suggestion" button. The decision is the reader's.
+ */
+function buildSuggestion(f) {
+    if (!f.proposal)
+        return "";
+    return [
+        suggestionMarker(f),
+        `${f.sentence} Ctrl Alt Delegate proposes \`${f.proposal.from}\` → \`${f.proposal.to}\`; a person decides.`,
+        "",
+        "```suggestion",
+        f.proposal.replacement,
+        "```",
+    ].join("\n");
+}
 const CHECK_ORDER = ["dead-command", "dead-path", "no-check", "no-file", "contradiction"];
 const CHECK_LABEL = {
     "dead-command": "Dead command",
@@ -37194,6 +37216,7 @@ function buildComment(result) {
     lines.push(...inventoryLines(result.inventory));
     for (const note of result.notes)
         lines.push(note.sentence, "");
+    lines.push(...instructionChangeLines(result.instructionChanges));
     if (result.findings.length === 0) {
         lines.push("No findings.", "");
     }
@@ -37237,13 +37260,61 @@ function inventoryLines(inventory) {
     }
     return lines;
 }
+/**
+ * A pull request that changes an instruction file changes what every agent
+ * on the repository is told, so the comment says what changed in those
+ * terms: who reads the file, where it applies, which rules moved, and whose
+ * it is. A pull request that changes no instruction file gets no section.
+ */
+function instructionChangeLines(changes) {
+    if (changes.length === 0)
+        return [];
+    const lines = [`### Instruction files changed (${changes.length})`, ""];
+    for (const c of changes) {
+        const status = c.status === "renamed" && c.previousPath ? `renamed from \`${c.previousPath}\`` : c.status;
+        const owner = c.owners.length === 0
+            ? c.status === "removed"
+                ? ""
+                : " No Owner line."
+            : ` Owner: ${c.owners.map((o) => `\`${o}\``).join(", ")}.`;
+        lines.push(`- \`${c.path}\` — ${status}. Read by ${list(c.readBy)}. Applies to ${c.appliesTo}.${owner}`);
+        if (c.added.length > 0)
+            lines.push(`  - Added: ${c.added.map(quote).join(", ")}`);
+        if (c.removed.length > 0)
+            lines.push(`  - Removed: ${c.removed.map(quote).join(", ")}`);
+        if (c.edited.length > 0)
+            lines.push(`  - Edited: ${c.edited.map(quote).join(", ")}`);
+    }
+    lines.push("");
+    return lines;
+}
+function list(items) {
+    return items.length <= 1 ? items.join("") : `${items.slice(0, -1).join(", ")} and ${items[items.length - 1]}`;
+}
+function quote(title) {
+    return `"${title}"`;
+}
 function plural(count, noun) {
     return `${count} ${noun}${count === 1 ? "" : "s"}`;
 }
 function formatFindingLine(f) {
     const lookedFor = f.lookedFor ? ` — looked for \`${f.lookedFor}\`` : "";
     const where = f.line > 0 ? `${f.file}:${f.line}` : f.file;
-    return `- \`${where}\` — ${f.sentence}${lookedFor}`;
+    return `- \`${where}\` — ${f.sentence}${lookedFor}${proposalText(f)}`;
+}
+/**
+ * A proposed fix is said in the comment whether or not it could be posted
+ * as a suggested change, which GitHub allows only on a line in the pull
+ * request's diff. Either way it is a proposal: Ctrl Alt Delegate made it
+ * and a person decides.
+ */
+function proposalText(f) {
+    if (!f.proposal)
+        return "";
+    const fix = `\`${f.proposal.from}\` → \`${f.proposal.to}\``;
+    return f.proposal.suggested
+        ? ` Ctrl Alt Delegate proposes ${fix} as a suggested change on this line; a person decides.`
+        : ` Ctrl Alt Delegate proposes ${fix}; this line is not in the pull request's diff, so no suggested change was posted.`;
 }
 
 ;// CONCATENATED MODULE: ./src/scan.ts
@@ -37911,7 +37982,126 @@ function definitions_isDefined(token, defs) {
     return wordBoundary.test(defs.ciWorkflowText);
 }
 
+;// CONCATENATED MODULE: ./src/proposals.ts
+/**
+ * A proposed fix exists only when there is exactly one thing the author can
+ * have meant. Two candidates, or none, is no proposal: a wrong suggestion a
+ * person accepts in one click is worse than a finding they read.
+ */
+/** True when `a` and `b` differ only by case. */
+function differsByCase(a, b) {
+    return a !== b && a.toLowerCase() === b.toLowerCase();
+}
+/**
+ * True when `a` and `b` differ by one hyphen or underscore: one inserted or
+ * removed (`typecheck` / `type-check`) or one swapped for the other
+ * (`deploy_staging` / `deploy-staging`). Case-sensitive, so the two rules
+ * do not combine into a looser one.
+ */
+function differsByOneDash(a, b) {
+    if (a === b)
+        return false;
+    if (a.length === b.length) {
+        let diff = -1;
+        for (let i = 0; i < a.length; i++) {
+            if (a[i] === b[i])
+                continue;
+            if (diff !== -1 || !"-_".includes(a[i]) || !"-_".includes(b[i]))
+                return false;
+            diff = i;
+        }
+        return diff !== -1;
+    }
+    const [longer, shorter] = a.length > b.length ? [a, b] : [b, a];
+    if (longer.length !== shorter.length + 1)
+        return false;
+    for (let i = 0; i < longer.length; i++) {
+        if (!"-_".includes(longer[i]))
+            continue;
+        if (longer.slice(0, i) + longer.slice(i + 1) === shorter)
+            return true;
+    }
+    return false;
+}
+/**
+ * The one defined script or target that `name` is a near miss of, by case
+ * or by a single hyphen or underscore, or undefined when none or several.
+ */
+function nearMiss(name, defined) {
+    const candidates = [...defined].filter((d) => differsByCase(name, d) || differsByOneDash(name, d));
+    return candidates.length === 1 ? candidates[0] : undefined;
+}
+/**
+ * The one file in the repository with the same basename as `token`, or
+ * undefined when none or several: where a file moved, if the Action can
+ * see it. A bare file name has already been looked for everywhere by the
+ * dead-path check, so only a path with a folder can be moved.
+ */
+function movedFile(token, allFiles) {
+    const path = token.replace(/^\.\//, "");
+    if (!path.includes("/"))
+        return undefined;
+    const base = path.split("/").pop() ?? path;
+    const candidates = allFiles.filter((f) => f !== path && (f === base || f.endsWith("/" + base)));
+    return candidates.length === 1 ? candidates[0] : undefined;
+}
+/** `command` with its script or target name replaced, the rest of the command kept. */
+function renameInCommand(command, name, replacement) {
+    const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    return command.replace(new RegExp(`(^|\\s)${escaped}(?=\\s|$)`), `$1${replacement}`);
+}
+/**
+ * The fix as a whole line, which is what a GitHub suggested change
+ * replaces: the line the finding points at with `from` replaced by `to`.
+ * None when the line does not hold `from` exactly once, since the Action
+ * would then be guessing which occurrence the finding is about.
+ */
+function proposeReplacement(rule, line, from, to) {
+    const text = rule.bodyText.split(/\r?\n/)[line - rule.bodyStartLine];
+    if (text === undefined || from === to)
+        return undefined;
+    if (text.split(from).length !== 2)
+        return undefined;
+    return { from, to, replacement: text.replace(from, to), suggested: false };
+}
+/**
+ * The lines of each changed file that are in the pull request's diff, by
+ * new line number: the lines GitHub lets a review comment sit on. Context
+ * lines count; a file whose patch the API left out has none.
+ */
+function linesInDiff(changed) {
+    const out = new Map();
+    for (const file of changed) {
+        if (!file.patch || file.status === "removed")
+            continue;
+        const lines = new Set();
+        let newLine = 0;
+        for (const raw of file.patch.split(/\r?\n/)) {
+            const hunk = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(raw);
+            if (hunk) {
+                newLine = Number(hunk[1]);
+                continue;
+            }
+            if (raw.startsWith("-") || raw.startsWith("\\"))
+                continue;
+            lines.add(newLine);
+            newLine++;
+        }
+        out.set(file.path, lines);
+    }
+    return out;
+}
+/** Marks each proposal whose line the pull request's diff holds, where a suggested change can be posted. */
+function markSuggested(findings, changed) {
+    const inDiff = linesInDiff(changed);
+    for (const f of findings) {
+        if (f.proposal)
+            f.proposal.suggested = inDiff.get(f.file)?.has(f.line) ?? false;
+    }
+}
+
 ;// CONCATENATED MODULE: ./src/checks/deadCommand.ts
+
 
 
 
@@ -37939,6 +38129,7 @@ function deadScriptFinding(rule, commands, line, defs) {
                         ? `Dead command: \`${part}\` — no package.json in the repository has a script named \`${script}\`.`
                         : `Dead command: \`${part}\` — package.json has no script named \`${script}\`.`,
                     lookedFor: script,
+                    proposal: proposeRename(rule, line, part, script, known),
                 });
             }
             const target = makeTargetInvocation(part);
@@ -37949,11 +38140,23 @@ function deadScriptFinding(rule, commands, line, defs) {
                     line,
                     sentence: `Dead command: \`${part}\` — no Makefile target named \`${target}\`.`,
                     lookedFor: target,
+                    proposal: proposeRename(rule, line, part, target, defs.makeTargets),
                 });
             }
         }
     }
     return out;
+}
+/**
+ * The fix for a script or target that is a near miss of exactly one defined
+ * one: the same command with the name corrected, as a suggested change on
+ * the line. `npm run typecheck` against a `type-check` script is the case.
+ */
+function proposeRename(rule, line, command, name, defined) {
+    const match = nearMiss(name, defined);
+    if (!match)
+        return undefined;
+    return proposeReplacement(rule, line, command, renameInCommand(command, name, match));
 }
 /** A command candidate after the script and target forms have been judged on their own. */
 function isPlainCommand(part) {
@@ -38068,6 +38271,7 @@ function globExpand(pattern, allPaths) {
 
 
 
+
 /**
  * First segments that look like a folder in prose but are not one: git
  * remotes and refs, media types, hosts. `origin/main` and
@@ -38163,6 +38367,15 @@ function proseSentence(token, claim) {
     }
     return `Dead path: \`${token}\` does not exist at the head commit.`;
 }
+/**
+ * The fix for a path whose file the Action can see elsewhere, as the one
+ * file with that basename: the path rewritten on the line, as a suggested
+ * change. `scripts/rotate-keys.sh` after the script moved to `tools/` is the case.
+ */
+function proposeMove(rule, line, token, allFiles) {
+    const moved = movedFile(token, allFiles);
+    return moved ? proposeReplacement(rule, line, token, moved) : undefined;
+}
 function checkDeadPath(root, rules) {
     const allFiles = listFiles(root);
     const findings = [];
@@ -38185,6 +38398,7 @@ function checkDeadPath(root, rules) {
                         line,
                         sentence: proseSentence(token, claim),
                         lookedFor: token,
+                        proposal: proposeMove(rule, line, token, allFiles),
                     });
                 }
             }
@@ -38214,6 +38428,7 @@ function checkDeadPath(root, rules) {
                         line: field.line,
                         sentence: `Dead path: \`${token}\` does not exist at the head commit.`,
                         lookedFor: token,
+                        proposal: proposeMove(rule, field.line, token, allFiles),
                     });
                 }
             }
@@ -38325,6 +38540,7 @@ function checkNoInstructionFile(root, files) {
 
 
 
+/** The kind the Action reads a path as, or undefined for a file it does not read. */
 function classify(path) {
     const base = path.split("/").pop() ?? path;
     if (base === "AGENTS.md")
@@ -38387,60 +38603,6 @@ function discoverFiles(root, options = {}) {
 }
 function guessExtraKind(path) {
     return classify(path) ?? "AGENTS";
-}
-
-;// CONCATENATED MODULE: ./src/inventory.ts
-/**
- * The label a reader recognises, not the internal kind. "Cursor rules" rather
- * than CURSOR_MDC, because this line is read by someone deciding whether the
- * Action understood their repository.
- */
-const TOOL_LABEL = {
-    AGENTS: "AGENTS.md",
-    CLAUDE: "CLAUDE.md",
-    COPILOT: "Copilot instructions",
-    CURSOR_MDC: "Cursor rules",
-    CURSORRULES: ".cursorrules",
-    GEMINI: "GEMINI.md",
-    SKILL: "SKILL.md",
-};
-/** Fixed so the same repository always renders the same line. */
-const TOOL_ORDER = [
-    "AGENTS",
-    "CLAUDE",
-    "COPILOT",
-    "CURSOR_MDC",
-    "CURSORRULES",
-    "GEMINI",
-    "SKILL",
-];
-/**
- * What exists, counted from what was already discovered and parsed. This adds
- * no file reads and no parsing of its own: `files` and `rules` are the same
- * values the checks ran against, so the inventory cannot disagree with them.
- *
- * Ownership and review are counted as "recorded", never as "current". Whether a
- * review is still valid needs the history this Action deliberately does not
- * keep, so the count says how many rules carry the line and stops there.
- */
-function buildInventory(files, rules) {
-    const byKind = new Map();
-    for (const file of files) {
-        byKind.set(file.kind, (byKind.get(file.kind) ?? 0) + 1);
-    }
-    const tools = TOOL_ORDER.filter((kind) => byKind.has(kind)).map((kind) => ({
-        kind,
-        label: TOOL_LABEL[kind],
-        fileCount: byKind.get(kind),
-    }));
-    return {
-        fileCount: files.length,
-        ruleCount: rules.length,
-        toolCount: tools.length,
-        tools,
-        ownedRuleCount: rules.filter((r) => Boolean(r.owner?.trim())).length,
-        reviewedRuleCount: rules.filter((r) => Boolean(r.reviewed?.trim())).length,
-    };
 }
 
 ;// CONCATENATED MODULE: ./src/parser.ts
@@ -38652,7 +38814,247 @@ function parseFiles(files) {
     return files.flatMap(parseFile);
 }
 
+;// CONCATENATED MODULE: ./src/instructionChanges.ts
+
+
+/**
+ * The tools that read a file of each kind. AGENTS.md is the shared file:
+ * Codex reads it as its own, and Cursor and Copilot read it alongside their
+ * rules. A SKILL.md is loaded by the tools that load skills.
+ */
+const READERS = {
+    AGENTS: ["Codex", "Cursor", "Copilot"],
+    CLAUDE: ["Claude Code"],
+    COPILOT: ["Copilot"],
+    CURSOR_MDC: ["Cursor"],
+    CURSORRULES: ["Cursor"],
+    GEMINI: ["Gemini"],
+    SKILL: ["Claude Code", "Codex"],
+};
+/** The value of one frontmatter key (`globs:`), or undefined when the file has no frontmatter or no such key. */
+function frontmatterValue(content, key) {
+    const lines = content.split(/\r?\n/);
+    if (lines[0]?.trim() !== "---")
+        return undefined;
+    for (let i = 1; i < lines.length; i++) {
+        if (lines[i].trim() === "---")
+            return undefined;
+        const m = new RegExp(`^${key}:\\s*(.*)$`, "i").exec(lines[i]);
+        if (m)
+            return m[1].trim();
+    }
+    return undefined;
+}
+/**
+ * Where the file applies, in the reader's terms: the whole repository for
+ * a root file, the folder for a nested one, the `globs:` frontmatter for a
+ * Cursor rule, and the skill's own folder for a SKILL.md, which is loaded
+ * when invoked rather than always on.
+ */
+function appliesTo(path, kind, content) {
+    const folder = path.includes("/") ? path.slice(0, path.lastIndexOf("/") + 1) : "";
+    if (kind === "SKILL")
+        return folder ? `when the skill is invoked (\`${folder}\`)` : "when the skill is invoked";
+    if (kind === "CURSOR_MDC") {
+        const globs = content ? frontmatterValue(content, "globs") : undefined;
+        if (globs)
+            return `\`${globs}\``;
+        const always = content ? frontmatterValue(content, "alwaysApply") : undefined;
+        return always === "true" ? "the whole repository" : "when Cursor attaches the rule";
+    }
+    if (kind === "COPILOT" || kind === "CURSORRULES")
+        return "the whole repository";
+    return folder ? `\`${folder}\`` : "the whole repository";
+}
+/** The `## ` heading text of a diff line, with a five-line `Rule:` prefix removed, or undefined. */
+function headingOf(text) {
+    const m = /^##\s+(.*)$/.exec(text);
+    return m ? m[1].replace(/^Rule:\s*/i, "").trim() : undefined;
+}
+/**
+ * The rule each line of the head content sits under, from the same parser
+ * the checks use, so a changed line is named by the rule the Action reads
+ * it as. Lines before the first rule (frontmatter, a lone title) are none.
+ */
+function sectionIndex(file) {
+    if (!file)
+        return () => undefined;
+    const rules = parseFile(file);
+    return (line) => {
+        let title;
+        for (const rule of rules) {
+            if (rule.titleLine <= line)
+                title = rule.title;
+        }
+        return title;
+    };
+}
+/**
+ * Walks a unified diff and names the rules it touches: a `## ` heading on a
+ * `+` line is a rule added, on a `-` line a rule removed, and any other
+ * changed line is an edit to the rule it sits under at the head commit. A
+ * heading both removed and added is one rule edited. Removed lines are
+ * placed by the new line before them, which is the rule they left.
+ */
+function rulesChanged(patch, sectionAt) {
+    const added = new Set();
+    const removed = new Set();
+    const edited = new Set();
+    if (!patch)
+        return { added: [], removed: [], edited: [] };
+    let newLine = 0;
+    for (const raw of patch.split(/\r?\n/)) {
+        const hunk = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(raw);
+        if (hunk) {
+            newLine = Number(hunk[1]);
+            continue;
+        }
+        if (raw.startsWith("\\"))
+            continue; // "\ No newline at end of file"
+        const marker = raw[0];
+        const text = raw.slice(1);
+        const blank = text.trim() === ""; // a blank line moved is not a rule edited
+        if (marker === "+") {
+            const heading = headingOf(text);
+            if (heading)
+                added.add(heading);
+            else if (!blank) {
+                const section = sectionAt(newLine);
+                if (section)
+                    edited.add(section);
+            }
+            newLine++;
+        }
+        else if (marker === "-") {
+            const heading = headingOf(text);
+            if (heading)
+                removed.add(heading);
+            else if (!blank) {
+                const section = sectionAt(Math.max(newLine - 1, 1));
+                if (section)
+                    edited.add(section);
+            }
+        }
+        else {
+            newLine++;
+        }
+    }
+    for (const title of [...added]) {
+        if (removed.has(title)) {
+            added.delete(title);
+            removed.delete(title);
+            edited.add(title);
+        }
+    }
+    for (const title of [...edited]) {
+        if (added.has(title) || removed.has(title))
+            edited.delete(title);
+    }
+    return { added: [...added], removed: [...removed], edited: [...edited] };
+}
+/** In a file that is new, every rule is added, including one with no heading of its own. */
+function forStatus(rules, status) {
+    if (status !== "added")
+        return rules;
+    return { added: [...rules.edited, ...rules.added], removed: [], edited: [] };
+}
+/** The distinct Owner lines of the file at the head commit, in order of appearance. */
+function ownersOf(file) {
+    if (!file)
+        return [];
+    const owners = [];
+    for (const rule of parseFile(file)) {
+        const owner = rule.owner?.trim();
+        if (owner && !owners.includes(owner))
+            owners.push(owner);
+    }
+    return owners;
+}
+/**
+ * What a pull request did to the instruction layer, file by file, for the
+ * files the Action knows. A changed file of any other kind is not listed.
+ * `files` is the head commit as discovered, so a removed file has no head
+ * content and is described from its path and its diff alone.
+ */
+function explainInstructionChanges(changed, files) {
+    const out = [];
+    for (const change of changed) {
+        const kind = classify(change.path);
+        if (!kind)
+            continue;
+        const head = change.status === "removed" ? undefined : files.find((f) => f.path === change.path);
+        const rules = forStatus(rulesChanged(change.patch, sectionIndex(head)), change.status);
+        out.push({
+            path: change.path,
+            previousPath: change.previousPath,
+            kind,
+            status: change.status,
+            readBy: READERS[kind],
+            appliesTo: appliesTo(change.path, kind, head?.content),
+            ...rules,
+            owners: ownersOf(head),
+        });
+    }
+    return out.sort((a, b) => a.path.localeCompare(b.path));
+}
+
+;// CONCATENATED MODULE: ./src/inventory.ts
+/**
+ * The label a reader recognises, not the internal kind. "Cursor rules" rather
+ * than CURSOR_MDC, because this line is read by someone deciding whether the
+ * Action understood their repository.
+ */
+const TOOL_LABEL = {
+    AGENTS: "AGENTS.md",
+    CLAUDE: "CLAUDE.md",
+    COPILOT: "Copilot instructions",
+    CURSOR_MDC: "Cursor rules",
+    CURSORRULES: ".cursorrules",
+    GEMINI: "GEMINI.md",
+    SKILL: "SKILL.md",
+};
+/** Fixed so the same repository always renders the same line. */
+const TOOL_ORDER = [
+    "AGENTS",
+    "CLAUDE",
+    "COPILOT",
+    "CURSOR_MDC",
+    "CURSORRULES",
+    "GEMINI",
+    "SKILL",
+];
+/**
+ * What exists, counted from what was already discovered and parsed. This adds
+ * no file reads and no parsing of its own: `files` and `rules` are the same
+ * values the checks ran against, so the inventory cannot disagree with them.
+ *
+ * Ownership and review are counted as "recorded", never as "current". Whether a
+ * review is still valid needs the history this Action deliberately does not
+ * keep, so the count says how many rules carry the line and stops there.
+ */
+function buildInventory(files, rules) {
+    const byKind = new Map();
+    for (const file of files) {
+        byKind.set(file.kind, (byKind.get(file.kind) ?? 0) + 1);
+    }
+    const tools = TOOL_ORDER.filter((kind) => byKind.has(kind)).map((kind) => ({
+        kind,
+        label: TOOL_LABEL[kind],
+        fileCount: byKind.get(kind),
+    }));
+    return {
+        fileCount: files.length,
+        ruleCount: rules.length,
+        toolCount: tools.length,
+        tools,
+        ownedRuleCount: rules.filter((r) => Boolean(r.owner?.trim())).length,
+        reviewedRuleCount: rules.filter((r) => Boolean(r.reviewed?.trim())).length,
+    };
+}
+
 ;// CONCATENATED MODULE: ./src/run.ts
+
+
 
 
 
@@ -38673,6 +39075,7 @@ function run(options) {
         ...checkContradiction(rules),
     ];
     findings.sort((a, b) => a.file.localeCompare(b.file) || a.line - b.line);
+    markSuggested(findings, options.changedFiles ?? []);
     const gating = options.failOn === "none"
         ? []
         : options.failOn === "dead-only"
@@ -38684,6 +39087,7 @@ function run(options) {
         fileCount: files.length,
         inventory: buildInventory(files, rules),
         notes: noFile.notes,
+        instructionChanges: explainInstructionChanges(options.changedFiles ?? [], files),
         conclusion: gating.length > 0 ? "failure" : "success",
     };
 }
@@ -38717,6 +39121,27 @@ function isForkPullRequest() {
     const baseRepo = pr.base?.repo?.full_name;
     return Boolean(headRepo && baseRepo && headRepo !== baseRepo);
 }
+/**
+ * The pull request's changed files, read from the API rather than from git:
+ * actions/checkout is shallow by default, so the head checkout has no base
+ * to diff against. A read, and the only one the Action makes beyond the
+ * sticky comment it looks for. Empty outside a pull request or when the
+ * API gives no answer, in which case the comment simply has no section.
+ */
+async function listChangedFiles(token) {
+    const pr = github_context.payload.pull_request;
+    if (!pr || !token)
+        return [];
+    const octokit = getOctokit(token);
+    const { owner, repo } = github_context.repo;
+    const files = await octokit.paginate(octokit.rest.pulls.listFiles, { owner, repo, pull_number: pr.number });
+    return files.map((f) => ({
+        path: f.filename,
+        status: f.status === "added" || f.status === "removed" || f.status === "renamed" ? f.status : "modified",
+        patch: f.patch,
+        previousPath: f.previous_filename,
+    }));
+}
 async function upsertStickyComment(token, body) {
     const pr = github_context.payload.pull_request;
     if (!pr) {
@@ -38739,16 +39164,68 @@ async function upsertStickyComment(token, body) {
         await octokit.rest.issues.createComment({ owner, repo, issue_number, body });
     }
 }
+/**
+ * Posts each proposed fix as a review comment holding a suggested change,
+ * on the finding's own line, for the reader to accept or not in the normal
+ * review UI. One per finding, only where the line is in the pull request's
+ * diff, and only ever a review comment: a rerun updates the one it posted
+ * before (found by its marker) rather than posting another, and nothing is
+ * deleted. The only write this Action makes besides the sticky comment.
+ */
+async function upsertSuggestions(token, findings) {
+    const pr = github_context.payload.pull_request;
+    if (!pr)
+        return;
+    const proposals = findings.filter((f) => f.proposal?.suggested);
+    if (proposals.length === 0)
+        return;
+    const octokit = getOctokit(token);
+    const { owner, repo } = github_context.repo;
+    const pull_number = pr.number;
+    const commit_id = pr.head?.sha;
+    const existing = await octokit.paginate(octokit.rest.pulls.listReviewComments, { owner, repo, pull_number });
+    for (const f of proposals) {
+        const body = buildSuggestion(f);
+        const marker = suggestionMarker(f);
+        const previous = existing.find((c) => c.body?.includes(marker));
+        if (previous?.body === body)
+            continue;
+        if (previous) {
+            await octokit.rest.pulls.updateReviewComment({ owner, repo, comment_id: previous.id, body });
+        }
+        else {
+            await octokit.rest.pulls.createReviewComment({
+                owner,
+                repo,
+                pull_number,
+                commit_id,
+                path: f.file,
+                line: f.line,
+                side: "RIGHT",
+                body,
+            });
+        }
+    }
+}
 async function writeJobSummary(body) {
     await summary.addRaw(body, true).write();
 }
 async function main() {
     const root = process.cwd();
+    const token = getInput("token") || process.env.GITHUB_TOKEN || "";
+    let changedFiles = [];
+    try {
+        changedFiles = await listChangedFiles(token);
+    }
+    catch (err) {
+        warning(`Could not list the pull request's files, so the comment will not say which instruction files changed: ${err.message}`);
+    }
     const options = {
         root,
         extraPaths: splitList(getInput("paths")),
         failOn: parseFailOn(getInput("fail-on") || "all"),
         extraAllowCommands: splitList(getInput("allow-commands")),
+        changedFiles,
     };
     const result = run(options);
     const findingsJson = JSON.stringify(result.findings, null, 2);
@@ -38757,7 +39234,6 @@ async function main() {
     setOutput("conclusion", result.conclusion);
     info(`Ctrl Alt Delegate: ${result.findings.length} finding(s) across ${result.ruleCount} rule(s) in ${result.fileCount} file(s).`);
     const body = buildComment(result);
-    const token = getInput("token") || process.env.GITHUB_TOKEN || "";
     const fork = isForkPullRequest();
     if (fork) {
         info("Fork pull request: GITHUB_TOKEN is read-only here, so findings go to the job summary instead of a PR comment.");
@@ -38781,6 +39257,12 @@ async function main() {
                 warning(`Could not write the job summary either: ${summaryErr.message}`);
             }
         }
+        try {
+            await upsertSuggestions(token, result.findings);
+        }
+        catch (err) {
+            warning(`Could not post a suggested change: ${err.message}`);
+        }
     }
     // The comment/summary step never gates the run — only findings do, and
     // only when `fail-on` says they should.
@@ -38797,6 +39279,7 @@ if (!process.env.VITEST) {
 }
 
 var __webpack_exports__isForkPullRequest = __webpack_exports__.B;
-export { __webpack_exports__isForkPullRequest as isForkPullRequest };
+var __webpack_exports__listChangedFiles = __webpack_exports__.A;
+export { __webpack_exports__isForkPullRequest as isForkPullRequest, __webpack_exports__listChangedFiles as listChangedFiles };
 
 //# sourceMappingURL=index.js.map

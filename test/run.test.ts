@@ -1,7 +1,8 @@
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { run } from "../src/run.js";
-import type { CheckId } from "../src/types.js";
+import type { ChangedFile, CheckId } from "../src/types.js";
 
 const FIXTURES = join(import.meta.dirname, "fixtures");
 
@@ -121,6 +122,11 @@ describe("check 1 — dead command", () => {
     expect(findings.map((f) => `${f.line}:${f.lookedFor}`)).toEqual(["19:lint", "21:release"]);
   });
 
+  it("proposes no fix for a script or target with no near miss among the defined ones", () => {
+    const findings = byCheck(findingsFor("dead-command-prose"), "dead-command");
+    expect(findings.every((f) => f.proposal === undefined)).toBe(true);
+  });
+
   it("stays silent on allowed tools, installed dependencies, existing scripts and targets, chained commands, paths, and uncued spans", () => {
     const findings = byCheck(findingsFor("dead-command-prose"), "dead-command");
     expect(findings.map((f) => f.lookedFor).sort()).toEqual(["buildit", "deploy", "lint", "release", "typecheck"]);
@@ -144,6 +150,17 @@ describe("check 2 — dead path", () => {
     expect(findings[0].file).toBe("AGENTS.md");
     expect(findings[0].lookedFor).toBe("scripts/rotate-keys.sh");
     expect(findings[0].sentence).toBe("Dead path: `scripts/rotate-keys.sh` — `scripts/` exists but has no `rotate-keys.sh`.");
+  });
+
+  it("proposes the one file with that name as the fix, and nothing for a file that is nowhere", () => {
+    const findings = byCheck(findingsFor("dead-path-prose"), "dead-path");
+    expect(findings.map((f) => `${f.lookedFor} ${f.proposal?.to ?? "-"}`)).toEqual([
+      "scripts/rotate-keys.sh tools/rotate-keys.sh",
+      "docs/runbook.md -",
+      "CONTRIBUTING.md -",
+      "src/**/*.test.ts -",
+    ]);
+    expect(findings[0].proposal?.replacement).toBe("- `tools/rotate-keys.sh` rotates keys.");
   });
 
   it("fires in a heading block on a missing path, a missing bare file name, and an empty glob", () => {
@@ -320,11 +337,122 @@ describe("the hertect-tools dogfood fixture", () => {
       "dead-command AGENTS.md:11 lint",
       "dead-command AGENTS.md:12 deploy:staging",
       "contradiction AGENTS.md:12",
-      "no-check AGENTS.md:14",
-      "no-check AGENTS.md:19",
+      "dead-command AGENTS.md:13 typecheck",
+      "no-check AGENTS.md:15",
+      "no-check AGENTS.md:22",
     ]);
     expect(resultFor("hertect-tools").notes.map((n) => n.sentence)).toEqual([
       "No instruction file for Copilot and Gemini. Not a finding: nothing here says they are in use.",
     ]);
+  });
+
+  it("has no instruction-change section outside a pull request", () => {
+    expect(resultFor("hertect-tools").instructionChanges).toEqual([]);
+  });
+});
+
+/**
+ * The pull request's files as the GitHub API lists them, in the shape
+ * index.ts maps them to. hertect-tools.pull-request.json is the pull request
+ * that produced the hertect-tools head: it reworded the preamble, added the
+ * deploy line and "Scope boundaries", dropped "Testing", added the Cursor
+ * deploy rule, removed GEMINI.md, moved rotate-keys.sh and touched src/.
+ */
+function pullRequestFiles(name: string): ChangedFile[] {
+  const raw = JSON.parse(readFileSync(join(FIXTURES, `${name}.pull-request.json`), "utf8")) as {
+    filename: string;
+    status: ChangedFile["status"];
+    patch?: string;
+    previous_filename?: string;
+  }[];
+  return raw.map((f) => ({ path: f.filename, status: f.status, patch: f.patch, previousPath: f.previous_filename }));
+}
+
+describe("an instruction pull request on the hertect-tools fixture", () => {
+  const result = run({
+    root: join(FIXTURES, "hertect-tools"),
+    extraPaths: [],
+    failOn: "all",
+    extraAllowCommands: [],
+    changedFiles: pullRequestFiles("hertect-tools"),
+  });
+
+  it("explains the three instruction files and leaves src/ and the moved script out", () => {
+    expect(result.instructionChanges.map((c) => `${c.path} ${c.status}`)).toEqual([
+      ".cursor/rules/deploy.mdc added",
+      "AGENTS.md modified",
+      "GEMINI.md removed",
+    ]);
+  });
+
+  it("says who reads each file, where it applies, which rules moved, and whose it is", () => {
+    const [cursor, agents, gemini] = result.instructionChanges;
+    expect(cursor).toMatchObject({
+      readBy: ["Cursor"],
+      appliesTo: "the whole repository",
+      added: ["deploy.mdc"],
+      owners: [],
+    });
+    expect(agents).toMatchObject({
+      readBy: ["Codex", "Cursor", "Copilot"],
+      appliesTo: "the whole repository",
+      added: ["Scope boundaries"],
+      removed: ["Testing"],
+      edited: ["Hertect Tools agent instructions", "Scripts"],
+      owners: ["@hertect-ops"],
+    });
+    expect(gemini).toMatchObject({ readBy: ["Gemini"], removed: ["Deploy"], owners: [] });
+  });
+
+  it("leaves the findings as they are without the pull request, except which proposals became suggested changes", () => {
+    const bare = (f: { proposal?: { suggested: boolean } }) => ({ ...f, proposal: f.proposal && { ...f.proposal, suggested: false } });
+    expect(result.findings.map(bare)).toEqual(findingsFor("hertect-tools").map(bare));
+  });
+
+  // A proposed fix is one the Action can see exactly one of: the moved script
+  // has one file of that name in the repository, the typecheck script is one
+  // hyphen from the defined one. lint and deploy have no near miss, so they
+  // get a finding and no proposal.
+  it("proposes the moved script and the near-miss script as suggested changes on lines in the diff, and nothing else", () => {
+    const proposals = result.findings.map((f) => `${f.file}:${f.line} ${f.lookedFor ?? ""} ${f.proposal ? `${f.proposal.from} → ${f.proposal.to} ${f.proposal.suggested}` : "-"}`);
+    expect(proposals).toEqual([
+      ".cursor/rules/deploy.mdc:6 deploy -",
+      ".cursor/rules/deploy.mdc:6 deploy:staging -",
+      ".cursor/rules/deploy.mdc:6  -",
+      "AGENTS.md:10 scripts/rotate-keys.sh scripts/rotate-keys.sh → tools/rotate-keys.sh true",
+      "AGENTS.md:11 lint -",
+      "AGENTS.md:12 deploy:staging -",
+      "AGENTS.md:12  -",
+      "AGENTS.md:13 typecheck npm run typecheck → npm run type-check true",
+      "AGENTS.md:15  -",
+      "AGENTS.md:22  -",
+    ]);
+    expect(result.findings[3].proposal?.replacement).toBe(
+      "- `tools/rotate-keys.sh` rotates the shared API keys used by internal tooling. Run",
+    );
+    expect(result.findings[7].proposal?.replacement).toBe("- Run `npm run type-check` before pushing.");
+  });
+
+  it("keeps the proposal but posts no suggested change when the line is not in the pull request's diff", () => {
+    const code = run({
+      root: join(FIXTURES, "hertect-tools"),
+      extraPaths: [],
+      failOn: "all",
+      extraAllowCommands: [],
+      changedFiles: pullRequestFiles("hertect-tools").filter((f) => f.path !== "AGENTS.md"),
+    });
+    const proposed = code.findings.filter((f) => f.proposal);
+    expect(proposed.map((f) => `${f.line} ${f.proposal?.suggested}`)).toEqual(["10 false", "13 false"]);
+  });
+
+  it("has no section when the pull request changes no instruction file", () => {
+    const code = run({
+      root: join(FIXTURES, "hertect-tools"),
+      extraPaths: [],
+      failOn: "all",
+      extraAllowCommands: [],
+      changedFiles: pullRequestFiles("hertect-tools").filter((f) => f.path === "src/index.ts" || f.path === "tools/rotate-keys.sh"),
+    });
+    expect(code.instructionChanges).toEqual([]);
   });
 });
